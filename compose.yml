@@ -1,0 +1,18 @@
+services:
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        API_URL: http://backend:3001
+    ports:
+      - "3000:3000"
+    environment:
+      API_URL: http://backend:3001
+    depends_on:
+      - backend
+
+  backend:
+    build: ./backend
+    environment:
+      PORT: "3001"
+      MONGO_URL: ${MONGO_URL}

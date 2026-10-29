@@ -1,0 +1,326 @@
+==========================================================================
+ DEPLOYA TILL RENDER MED DOCKER HUB
+ Utvecklingsmiljö (development) + produktionsmiljö (production)
+==========================================================================
+
+I den här guiden bygger du Docker-imagesen på din egen dator, pushar
+dem till Docker Hub, och Render hämtar (pullar) de färdiga imagesen och
+kör dem.
+
+   Din dator  --docker push-->  Docker Hub  --pull-->  Render
+
+Vi skapar TVÅ miljöer:
+
+   development  -> för att testa nya ändringar
+   production   -> den "riktiga" appen som användarna ser
+
+Varje miljö får en egen backend, en egen frontend och en egen databas:
+
+   development:  atlas-frontend-dev  -> atlas-backend-dev  -> db "atlas-dev"
+   production:   atlas-frontend-prod -> atlas-backend-prod -> db "atlas-prod"
+
+
+DET HÄR BEHÖVER DU
+--------------------------------------------------------------------------
+ - Docker Desktop installerat och igång
+ - Ett konto på Docker Hub  (https://hub.docker.com)
+ - Ett konto på Render      (https://render.com)
+ - Ett konto på MongoDB Atlas med ett kluster (det du redan använder)
+
+Byt ut följande i guiden:
+   <dockerhub-user>   mot ditt användarnamn på Docker Hub
+   <user>:<password>  mot din databasanvändare i MongoDB Atlas
+
+
+==========================================================================
+ STEG 0 - FÖRBERED PROJEKTET
+==========================================================================
+
+Kontrollera att de här två filerna finns. De hindrar Docker från att
+kopiera in din lokala node_modules och dina hemligheter i imagen.
+
+backend/.dockerignore ska innehålla:
+
+   node_modules
+   .env
+   .DS_Store
+
+frontend/.dockerignore ska innehålla:
+
+   .env
+   .env.local
+   node_modules
+   .next
+   .git
+   .DS_Store
+
+
+==========================================================================
+ STEG 1 - MONGODB ATLAS: EN DATABAS PER MILJÖ
+==========================================================================
+
+1. Öppna ditt kluster i Atlas -> "Connect" -> "Drivers" och kopiera
+   connection-strängen.
+
+2. Gör TVÅ versioner av den. Den enda skillnaden är databasnamnet
+   efter ".net/":
+
+   DEV:
+   mongodb+srv://<user>:<password>@cluster0.xxxxx.mongodb.net/atlas-dev?retryWrites=true&w=majority
+
+   PROD:
+   mongodb+srv://<user>:<password>@cluster0.xxxxx.mongodb.net/atlas-prod?retryWrites=true&w=majority
+
+   Du behöver inte skapa databaserna själv. MongoDB skapar dem när den
+   första tasken sparas.
+
+3. Gå till "Network Access" -> "Add IP Address" -> "Allow access from
+   anywhere" (0.0.0.0/0) -> Confirm.
+
+   Varför? Renders servrar har ingen fast IP-adress. Det är okej för
+   ett skolprojekt, men på ett riktigt företag skulle man begränsa
+   åtkomsten.
+
+Spara båda strängarna någonstans. Du behöver dem i steg 5.
+
+
+==========================================================================
+ STEG 2 - SKAPA REPOSITORIES PÅ DOCKER HUB
+==========================================================================
+
+1. Logga in på https://hub.docker.com
+2. Klicka på "Create repository" och skapa två PUBLIKA repositories:
+
+   atlas-backend
+   atlas-frontend
+
+3. Logga in från terminalen:
+
+   docker login
+
+   Ange ditt användarnamn och lösenord på Docker Hub (eller en access
+   token).
+
+
+==========================================================================
+ STEG 3 - BYGG OCH PUSHA BACKEND-IMAGEN
+==========================================================================
+
+Öppna en terminal i projektets rotmapp (mappen där compose.yml ligger).
+
+   docker buildx build --platform linux/amd64 -t <dockerhub-user>/atlas-backend:1.0.0 --push ./backend
+
+Vad gör kommandot?
+   --platform linux/amd64   Render kör på amd64-servrar (Intel/AMD).
+                            Har du en Mac med M1/M2/M3/M4-chip bygger
+                            Docker för arm64 som standard, och då
+                            kraschar appen på Render med
+                            "exec format error". Den här flaggan löser
+                            det.
+   -t ...:1.0.0             Namnger imagen och ger den en versionstagg.
+   --push                   Laddar upp imagen till Docker Hub direkt
+                            efter bygget.
+   ./backend                Mappen där Dockerfile ligger.
+
+Vi bygger backend EN gång och använder SAMMA image i dev och prod. Det
+enda som skiljer är vilken MONGO_URL vi ger den på Render. Det går
+eftersom backend läser MONGO_URL när den startar, inte när den byggs.
+
+Kontrollera på hub.docker.com att atlas-backend nu har taggen 1.0.0.
+
+
+==========================================================================
+ STEG 4 - SKAPA PROJEKTET OCH MILJÖERNA PÅ RENDER
+==========================================================================
+
+1. Logga in på https://dashboard.render.com
+2. Klicka på "New" -> "Project"
+3. Döp det till: atlas
+4. Skapa två miljöer (environments):
+
+   production
+   development
+
+   (Byt namn på standardmiljön om det behövs och klicka sedan på
+   "Add environment".)
+
+
+==========================================================================
+ STEG 5 - DEPLOYA DE TVÅ BACKENDARNA
+==========================================================================
+
+Gör det här TVÅ gånger: en gång i "development" och en gång i
+"production".
+
+1. Öppna miljön och klicka på "New" -> "Web Service"
+2. Välj "Existing Image"
+3. Image URL:
+
+   docker.io/<dockerhub-user>/atlas-backend:1.0.0
+
+4. Fyll i:
+
+                       DEVELOPMENT            PRODUCTION
+   Name:               atlas-backend-dev      atlas-backend-prod
+   Instance type:      Free                   Free
+
+5. Lägg till under "Environment Variables":
+
+   DEVELOPMENT:   MONGO_URL = (din DEV-sträng från steg 1)
+   PRODUCTION:    MONGO_URL = (din PROD-sträng från steg 1)
+
+   Du behöver INTE lägga till PORT. Render sätter den själv, och
+   server.js använder redan process.env.PORT.
+
+6. Skriv in följande under "Advanced" -> "Health Check Path":
+
+   /api/health
+
+7. Klicka på "Deploy Web Service".
+
+8. Testa. Kopiera tjänstens URL högst upp på sidan och öppna:
+
+   https://atlas-backend-dev.onrender.com/api/health
+
+   Du ska se:
+
+   {"status":"ok","database":"connected"}
+
+   VIKTIGT: Render lägger ibland till slumpmässiga tecken i URL:en, till
+   exempel atlas-backend-dev-ab12.onrender.com. Skriv ner den RIKTIGA
+   URL:en för båda backendarna. Du behöver dem i nästa steg.
+
+
+==========================================================================
+ STEG 6 - BYGG OCH PUSHA FRONTEND-IMAGESEN
+==========================================================================
+
+Frontend fungerar inte som backend. Next.js läser API_URL under
+"npm run build" (i next.config.ts -> rewrites), så backendens adress
+SPARAS INUTI imagen. Därför behöver vi EN FRONTEND-IMAGE PER MILJÖ.
+
+Använd dina riktiga backend-URL:er från steg 5, UTAN snedstreck i
+slutet:
+
+   docker buildx build --platform linux/amd64 --build-arg API_URL=https://atlas-backend-dev.onrender.com -t <dockerhub-user>/atlas-frontend:dev --push ./frontend
+
+   docker buildx build --platform linux/amd64 --build-arg API_URL=https://atlas-backend-prod.onrender.com -t <dockerhub-user>/atlas-frontend:prod --push ./frontend
+
+--build-arg API_URL=...   skickar värdet till "ARG API_URL" i
+                          frontendens Dockerfile.
+
+
+==========================================================================
+ STEG 7 - DEPLOYA DE TVÅ FRONTENDARNA
+==========================================================================
+
+Gör det här TVÅ gånger: en gång i "development" och en gång i
+"production".
+
+1. "New" -> "Web Service" -> "Existing Image"
+2. Fyll i:
+
+   DEVELOPMENT
+   Image URL:       docker.io/<dockerhub-user>/atlas-frontend:dev
+   Name:            atlas-frontend-dev
+   Instance type:   Free
+
+   PRODUCTION
+   Image URL:       docker.io/<dockerhub-user>/atlas-frontend:prod
+   Name:            atlas-frontend-prod
+   Instance type:   Free
+
+3. Du behöver inga miljövariabler. API_URL finns redan inuti imagen.
+4. Klicka på "Deploy Web Service".
+5. Öppna frontendens URL och skapa en task.
+
+Kontrollera att miljöerna är separata: en task som du skapar i dev ska
+INTE synas i prod. De använder olika databaser.
+
+Varför behöver vi inte CORS? Webbläsaren anropar bara /api/... på
+FRONTEND. Next.js skickar vidare anropet till backend från servern (se
+rewrites i next.config.ts), så webbläsaren pratar aldrig direkt med
+backend.
+
+
+==========================================================================
+ STEG 8 - SLÄPP EN NY VERSION (FÖRST DEV, SEDAN PROD)
+==========================================================================
+
+Så här jobbar ett riktigt team: testa i dev och släpp sedan till prod.
+
+EXEMPEL: du har ändrat något i backend.
+
+1. Bygg och pusha en NY versionstagg:
+
+   docker buildx build --platform linux/amd64 -t <dockerhub-user>/atlas-backend:1.1.0 --push ./backend
+
+2. DEVELOPMENT: öppna atlas-backend-dev -> "Settings" -> "Image" ->
+   ändra taggen till 1.1.0 -> Save. Render deployar om.
+
+3. Testa dev-frontenden. Fungerar allt?
+
+4. PRODUCTION: öppna atlas-backend-prod -> ändra taggen till 1.1.0.
+
+   Poängen: produktion kör EXAKT samma image som du testade i dev.
+   Ingenting byggs om.
+
+EXEMPEL: du har ändrat något i frontend.
+
+1. Bygg om och pusha :dev-imagen (samma kommando som i steg 6).
+2. På atlas-frontend-dev: "Manual Deploy" -> "Deploy latest reference".
+   Render märker INTE av sig självt att du har pushat en ny image med
+   samma tagg.
+3. Testa. När det fungerar bygger och pushar du :prod och deployar
+   atlas-frontend-prod på samma sätt.
+
+TIPS - Deploy Hook: varje tjänst har en "Deploy Hook"-URL under
+"Settings". Om du anropar den deployar Render om tjänsten:
+
+   curl -X POST "https://api.render.com/deploy/srv-xxxx?key=yyyy"
+
+Håll den här URL:en hemlig. Alla som har den kan deploya om din tjänst.
+
+
+==========================================================================
+ VANLIGA PROBLEM
+==========================================================================
+
+"exec format error" i Renders loggar
+   -> Du glömde --platform linux/amd64. Bygg och pusha igen.
+
+Backend-loggen: "Startup failed: MONGO_URL missing"
+   -> Du har inte lagt till MONGO_URL som miljövariabel på Render.
+
+Backend-loggen: MongoServerSelectionError / timeout
+   -> Network Access i Atlas tillåter inte 0.0.0.0/0, ELLER så är
+      användarnamnet/lösenordet i connection-strängen fel.
+
+Frontend laddar, men inga tasks syns (fel 500 / 404 på /api/...)
+   -> Fel API_URL byggdes in i frontend-imagen. Kontrollera backendens
+      URL (slumpmässiga tecken? snedstreck i slutet?) och bygg och
+      pusha sedan imagen igen.
+
+Första sidladdningen tar ungefär 50 sekunder
+   -> Det är normalt på Free-planen. Tjänsterna "somnar" efter ungefär
+      15 minuter utan trafik och behöver tid att vakna. Vänta och ladda
+      om.
+
+Render hittar inte imagen
+   -> Kontrollera att repositoryt på Docker Hub är PUBLIKT och att
+      taggen är rättstavad.
+
+
+==========================================================================
+ SAMMANFATTNING
+==========================================================================
+
+   - Imagesen byggs på DIN dator och lagras på Docker Hub.
+   - Backend är EN image som används i båda miljöerna. Det enda som
+     skiljer är miljövariablerna (MONGO_URL).
+   - Frontend behöver EN image PER miljö, eftersom API_URL sparas inuti
+     den under bygget.
+   - Hemligheter (MONGO_URL) läggs aldrig i imagen. De läggs till på
+     Render.
+   - Ny version: pusha en ny tagg -> testa i dev -> byt prod till samma
+     tagg.

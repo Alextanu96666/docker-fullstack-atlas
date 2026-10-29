@@ -1,0 +1,369 @@
+==========================================================================
+ DEPLOYA TILL RENDER DIREKT FRÅN GITHUB (UTAN DOCKER HUB)
+ Utvecklingsmiljö (development) + produktionsmiljö (production)
+==========================================================================
+
+I den här guiden bygger du INGA images själv. Du pushar din kod till
+GitHub, och Render läser din Dockerfile, bygger imagen och kör den. Det
+är fortfarande en container, Render gör bara bygget åt dig.
+
+   Din dator  --git push-->  GitHub  --Render bygger Dockerfile-->  Render
+
+Vi skapar TVÅ miljöer, och var och en är kopplad till sin egen
+Git-BRANCH:
+
+   branch "dev"   -> development  (för att testa nya ändringar)
+   branch "main"  -> production   (den "riktiga" appen som användarna ser)
+
+Varje miljö får en egen backend, en egen frontend och en egen databas:
+
+   development:  atlas-frontend-dev  -> atlas-backend-dev  -> db "atlas-dev"
+   production:   atlas-frontend-prod -> atlas-backend-prod -> db "atlas-prod"
+
+Varje gång du pushar till en branch deployar Render automatiskt den
+miljö som hör till den.
+
+
+DET HÄR BEHÖVER DU
+--------------------------------------------------------------------------
+ - Git installerat
+ - Ett konto på GitHub  (https://github.com)
+ - Ett konto på Render  (https://render.com) - registrera dig med
+                                               GitHub, det blir enklare
+ - Ett konto på MongoDB Atlas med ett kluster (det du redan använder)
+
+Byt ut följande i guiden:
+   <github-user>      mot ditt användarnamn på GitHub
+   <user>:<password>  mot din databasanvändare i MongoDB Atlas
+
+
+==========================================================================
+ STEG 0 - FÖRBERED PROJEKTET
+==========================================================================
+
+1. En .gitignore i PROJEKTETS ROTMAPP (mappen där compose.yml ligger).
+
+   Din .env med MongoDB-lösenordet får ALDRIG hamna på GitHub. Skapa
+   filen .gitignore i rotmappen med det här innehållet:
+
+   .env
+   .env.local
+   node_modules/
+   .next/
+   .DS_Store
+
+2. .dockerignore-filer (så att Render inte kopierar in skräp i imagen).
+
+   backend/.dockerignore:
+
+   node_modules
+   .env
+   .DS_Store
+
+   frontend/.dockerignore:
+
+   .env
+   .env.local
+   node_modules
+   .next
+   .git
+   .DS_Store
+
+3. Ta bort det extra Git-repositoryt i frontend/.
+
+   Create Next App skapade automatiskt en .git-mapp inuti frontend/.
+   Om du behåller den visar GitHub "frontend" som en tom mapp som inte
+   går att öppna, och Render kan inte bygga den.
+
+   Mac / Linux / Git Bash:
+      rm -rf frontend/.git
+
+   Windows PowerShell:
+      Remove-Item -Recurse -Force frontend\.git
+
+   (.git är en dold mapp, så du kanske inte ser den i Finder eller
+   Utforskaren.)
+
+
+==========================================================================
+ STEG 1 - LÄGG UPP PROJEKTET PÅ GITHUB
+==========================================================================
+
+1. På github.com: klicka på "New repository"
+   Name: docker-fullstack-atlas
+   Kryssa INTE i "Add a README" (repositoryt måste vara tomt).
+   Klicka på "Create repository".
+
+2. I terminalen, i projektets rotmapp:
+
+   git init
+   git add .
+   git status
+
+   KONTROLLERA LISTAN NU: .env och .env.local får INTE finnas med. Om
+   de gör det, fixa .gitignore innan du går vidare.
+
+   git commit -m "Initial commit"
+   git branch -M main
+   git remote add origin https://github.com/<github-user>/docker-fullstack-atlas.git
+   git push -u origin main
+
+3. Skapa dev-branchen och pusha den också:
+
+   git checkout -b dev
+   git push -u origin dev
+
+   Nu har du två brancher på GitHub: main och dev.
+
+
+==========================================================================
+ STEG 2 - MONGODB ATLAS: EN DATABAS PER MILJÖ
+==========================================================================
+
+1. Öppna ditt kluster i Atlas -> "Connect" -> "Drivers" och kopiera
+   connection-strängen.
+
+2. Gör TVÅ versioner av den. Den enda skillnaden är databasnamnet
+   efter ".net/":
+
+   DEV:
+   mongodb+srv://<user>:<password>@cluster0.xxxxx.mongodb.net/atlas-dev?retryWrites=true&w=majority
+
+   PROD:
+   mongodb+srv://<user>:<password>@cluster0.xxxxx.mongodb.net/atlas-prod?retryWrites=true&w=majority
+
+   Du behöver inte skapa databaserna själv. MongoDB skapar dem när den
+   första tasken sparas.
+
+3. Gå till "Network Access" -> "Add IP Address" -> "Allow access from
+   anywhere" (0.0.0.0/0) -> Confirm.
+
+   Varför? Renders servrar har ingen fast IP-adress. Det är okej för
+   ett skolprojekt, men på ett riktigt företag skulle man begränsa
+   åtkomsten.
+
+
+==========================================================================
+ STEG 3 - SKAPA PROJEKTET OCH MILJÖERNA PÅ RENDER
+==========================================================================
+
+1. Logga in på https://dashboard.render.com
+2. Klicka på "New" -> "Project"
+3. Döp det till: atlas
+4. Skapa två miljöer (environments):
+
+   production
+   development
+
+   (Byt namn på standardmiljön om det behövs och klicka sedan på
+   "Add environment".)
+
+
+==========================================================================
+ STEG 4 - DEPLOYA DE TVÅ BACKENDARNA
+==========================================================================
+
+Gör det här TVÅ gånger: en gång i "development" och en gång i
+"production".
+
+1. Öppna miljön och klicka på "New" -> "Web Service"
+2. Välj "Git Provider" -> GitHub -> välj docker-fullstack-atlas
+   (Ser du inte repot? Klicka på "Configure GitHub" och ge Render
+   åtkomst till det.)
+3. Fyll i:
+
+                       DEVELOPMENT            PRODUCTION
+   Name:               atlas-backend-dev      atlas-backend-prod
+   Language:           Docker                 Docker
+   Branch:             dev                    main
+   Root Directory:     backend                backend
+   Instance type:      Free                   Free
+
+   "Root Directory: backend" talar om för Render att den ska använda
+   Dockerfile i mappen backend/.
+
+4. Lägg till under "Environment Variables":
+
+   DEVELOPMENT:   MONGO_URL = (din DEV-sträng från steg 2)
+   PRODUCTION:    MONGO_URL = (din PROD-sträng från steg 2)
+
+   Du behöver INTE lägga till PORT. Render sätter den själv, och
+   server.js använder redan process.env.PORT.
+
+5. Skriv in följande under "Advanced" -> "Health Check Path":
+
+   /api/health
+
+6. Klicka på "Deploy Web Service". Render bygger nu din Dockerfile. Du
+   kan följa bygget live under "Logs". Första bygget tar några minuter.
+
+7. Testa. Kopiera tjänstens URL högst upp på sidan och öppna:
+
+   https://atlas-backend-dev.onrender.com/api/health
+
+   Du ska se:
+
+   {"status":"ok","database":"connected"}
+
+   VIKTIGT: Render lägger ibland till slumpmässiga tecken i URL:en, till
+   exempel atlas-backend-dev-ab12.onrender.com. Skriv ner den RIKTIGA
+   URL:en för båda backendarna. Du behöver dem i nästa steg.
+
+
+==========================================================================
+ STEG 5 - DEPLOYA DE TVÅ FRONTENDARNA
+==========================================================================
+
+Gör det här TVÅ gånger: en gång i "development" och en gång i
+"production".
+
+1. "New" -> "Web Service" -> GitHub -> docker-fullstack-atlas
+2. Fyll i:
+
+                       DEVELOPMENT            PRODUCTION
+   Name:               atlas-frontend-dev     atlas-frontend-prod
+   Language:           Docker                 Docker
+   Branch:             dev                    main
+   Root Directory:     frontend               frontend
+   Instance type:      Free                   Free
+
+3. Lägg till under "Environment Variables" (använd dina riktiga
+   backend-URL:er, UTAN snedstreck i slutet):
+
+   DEVELOPMENT:   API_URL = https://atlas-backend-dev.onrender.com
+   PRODUCTION:    API_URL = https://atlas-backend-prod.onrender.com
+
+   Varför fungerar det? Render skickar tjänstens miljövariabler till
+   Docker-bygget som build args. Frontendens Dockerfile har
+   "ARG API_URL", så den plockar upp värdet automatiskt under
+   "npm run build".
+
+4. Klicka på "Deploy Web Service".
+5. Öppna frontendens URL och skapa en task.
+
+Kontrollera att miljöerna är separata: en task som du skapar i dev ska
+INTE synas i prod. De använder olika databaser.
+
+Varför behöver vi inte CORS? Webbläsaren anropar bara /api/... på
+FRONTEND. Next.js skickar vidare anropet till backend från servern (se
+rewrites i next.config.ts), så webbläsaren pratar aldrig direkt med
+backend.
+
+OBS: om du ändrar API_URL senare måste du deploya frontend igen
+(Manual Deploy -> "Clear build cache & deploy"), eftersom värdet sparas
+under bygget.
+
+
+==========================================================================
+ STEG 6 - SLÄPP EN NY VERSION (FÖRST DEV, SEDAN PROD)
+==========================================================================
+
+Så här jobbar ett riktigt team: testa i dev och släpp sedan till prod.
+Här är det Git-brancherna som gör jobbet.
+
+1. Jobba på dev-branchen:
+
+   git checkout dev
+
+2. Ändra något, till exempel en rubrik i frontend.
+
+3. Committa och pusha:
+
+   git add .
+   git commit -m "Change heading"
+   git push
+
+   -> Render bygger och deployar AUTOMATISKT atlas-backend-dev och
+      atlas-frontend-dev.
+
+4. Öppna dev-frontenden och testa. Fungerar allt?
+
+5. Släpp till produktion genom att merga dev in i main:
+
+   git checkout main
+   git merge dev
+   git push
+
+   -> Render bygger och deployar AUTOMATISKT prod-tjänsterna.
+
+6. Gå tillbaka till dev inför nästa ändring:
+
+   git checkout dev
+
+TIPS: I ett riktigt team gör man en Pull Request på GitHub från dev
+till main i stället för "git merge" i terminalen, så att någon kan
+granska koden innan den når produktion.
+
+
+==========================================================================
+ VANLIGA PROBLEM
+==========================================================================
+
+Bygget misslyckas direkt: "Dockerfile not found"
+   -> Root Directory är fel. Det måste vara exakt backend eller
+      frontend.
+
+"frontend" ser ut som en tom mapp på GitHub / bygget hittar inga filer
+   -> Du glömde ta bort frontend/.git (steg 0.3). Ta bort den och kör
+      sedan:
+         git rm --cached frontend
+         git add frontend
+         git commit -m "Fix frontend folder"
+         git push
+
+.env hamnade på GitHub
+   -> Byt lösenord på databasanvändaren i Atlas DIREKT. Det gamla
+      lösenordet är nu offentligt, även om du tar bort filen.
+      Fixa sedan .gitignore och ta bort filen från Git:
+         git rm --cached .env
+         git commit -m "Remove .env"
+         git push
+
+Backend-loggen: "Startup failed: MONGO_URL missing"
+   -> Du har inte lagt till MONGO_URL som miljövariabel på Render.
+
+Backend-loggen: MongoServerSelectionError / timeout
+   -> Network Access i Atlas tillåter inte 0.0.0.0/0, ELLER så är
+      användarnamnet/lösenordet i connection-strängen fel.
+
+Frontend laddar, men inga tasks syns (fel 500 / 404 på /api/...)
+   -> API_URL är fel på frontend-tjänsten (slumpmässiga tecken?
+      snedstreck i slutet?). Rätta den och kör "Clear build cache &
+      deploy".
+
+Ingenting händer på Render när jag pushar
+   -> Kontrollera att du pushade till rätt branch (git branch visar
+      vilken branch du är på) och att "Auto-Deploy" är påslaget under
+      Settings.
+
+Första sidladdningen tar ungefär 50 sekunder
+   -> Det är normalt på Free-planen. Tjänsterna "somnar" efter ungefär
+      15 minuter utan trafik och behöver tid att vakna. Vänta och ladda
+      om.
+
+
+==========================================================================
+ SAMMANFATTNING
+==========================================================================
+
+   - Du behöver inte Docker Hub. Render bygger imagen från din
+     Dockerfile.
+   - Varje miljö följer sin egen branch: dev -> development,
+     main -> production.
+   - git push = automatisk deploy.
+   - Hemligheter (MONGO_URL) läggs aldrig på GitHub. De läggs till på
+     Render.
+   - Ny version: pusha till dev -> testa -> merga in i main -> pusha.
+
+
+==========================================================================
+ JÄMFÖRELSE MED DOCKER HUB-FLÖDET
+==========================================================================
+
+                           DOCKER HUB                  GITHUB (den här guiden)
+   Vem bygger imagen?      Du, på din dator            Render
+   Var lagras den?         Docker Hub                  Hos Render
+   Ny version              bygg + pusha + byt tagg     git push
+   dev -> prod             samma image, ny tagg        merga dev in i main
+   Behövs --platform?      Ja (Mac M1/M2/M3/M4)        Nej
+   Frontendens API_URL     --build-arg på din dator    Miljövariabel på Render
