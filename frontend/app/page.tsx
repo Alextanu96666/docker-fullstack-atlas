@@ -90,7 +90,7 @@ export default function Home() {
         {tasks.map((task) => (
           <li key={task._id}>
             {task.title}{" "}
-            <button onClick={() => deleteTask(task._id)}>Ta bort</button>
+            <button style={{ marginLeft: 10, backgroundColor: "red", color: "white", padding: "5px 10px" }} onClick={() => deleteTask(task._id)}>Ta bort</button>
           </li>
         ))}
       </ul>
